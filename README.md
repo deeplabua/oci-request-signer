@@ -1,4 +1,12 @@
+<p align="center"><img src=".github/oci-request-signer-256.png" width="128" height="128" alt="oci-request-signer icon"></p>
+
 # oci-request-signer
+
+[![CI](https://img.shields.io/github/actions/workflow/status/deeplabua/oci-request-signer/ci.yml?branch=main&logo=github&label=CI)](https://github.com/deeplabua/oci-request-signer/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/oci-request-signer?label=crates.io&color=e37933)](https://crates.io/crates/oci-request-signer)
+[![docs.rs](https://img.shields.io/docsrs/oci-request-signer?label=docs.rs)](https://docs.rs/oci-request-signer)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/deeplabua/oci-request-signer?style=flat&logo=github&label=Star)](https://github.com/deeplabua/oci-request-signer/stargazers)
 
 **Sign Oracle Cloud (OCI) REST API requests from Rust — no OCI SDK, no OpenSSL.**
 
@@ -64,6 +72,15 @@ retry helpers. See [`CHANGELOG.md`](CHANGELOG.md).
 
 [oci-arm-catcher](https://github.com/deeplabua/oci-arm-catcher), oci-free-keeper and
 oci-free-audit — part of [DeepLab](https://deeplab.tools).
+
+## Support
+
+If `oci-request-signer` saved you from writing OCI request signing yourself, two things help a lot:
+
+- ⭐ **[Star the repo](https://github.com/deeplabua/oci-request-signer)** — it's how other Rust developers talking to Oracle Cloud find it.
+- ☕ **[Buy me a coffee](https://send.monobank.ua/jar/4Hq7auheaa)** — if it saved you some time and you feel like it.
+
+Both are completely optional. The crate is free and always will be.
 
 ## License
 

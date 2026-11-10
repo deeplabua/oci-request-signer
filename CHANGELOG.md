@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-11-10
+
+- README: icon and badges (CI, crates.io, license, stars).
+- README: a Support section — star the repo, or buy me a coffee.
+
 ## 0.1.1 — 2026-11-10
 
 - Domains: `ClientBuilder::domain`, `Client::on_domain`, `Client::domain` and `Client::host`,
