@@ -1,0 +1,45 @@
+[package]
+name = "oci-request-signer"
+version = "0.1.0"
+description = "Sign Oracle Cloud (OCI) REST API requests from Rust: reads ~/.oci/config, RSA-SHA256 HTTP signatures, small blocking client — no OCI SDK, no OpenSSL"
+keywords = ["oracle-cloud", "oci", "request-signing", "api"]
+categories = ["api-bindings", "authentication"]
+edition = "2024"
+rust-version = "1.92"
+license = "MIT"
+repository = "https://github.com/deeplabua/oci-request-signer"
+homepage = "https://deeplab.tools"
+documentation = "https://docs.rs/oci-request-signer"
+readme = "README.md"
+include = ["src/**", "tests/**", "testdata/*.pem", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+
+[features]
+default = ["client"]
+# The blocking HTTP client. Without it the crate is config + signer only, for callers who
+# bring their own transport (reqwest, async, ...).
+client = ["dep:httpdate", "dep:serde", "dep:serde_json", "dep:ureq"]
+
+# Every dependency here must be permissive (MIT/Apache-2.0/BSD/ISC/MPL/Zlib).
+[dependencies]
+base64 = "0.22"                                                  # MIT OR Apache-2.0
+dirs = "6.0"                                                     # MIT OR Apache-2.0
+# RSA-SHA256 request signing. Already in the graph through rustls, and unlike the `rsa`
+# crate it has no open timing advisory.
+ring = "0.17"                                                    # Apache-2.0 AND ISC
+thiserror = "2.0"                                                # MIT OR Apache-2.0
+
+httpdate = { version = "1.0", optional = true }                  # MIT OR Apache-2.0
+serde = { version = "1.0", features = ["derive"], optional = true }  # MIT OR Apache-2.0
+serde_json = { version = "1.0", optional = true }                # MIT OR Apache-2.0
+# rustls + ring, no C toolchain and no OpenSSL.
+ureq = { version = "3.3", default-features = false, features = [
+    "rustls",
+], optional = true }                                             # MIT OR Apache-2.0
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }               # MIT OR Apache-2.0
+serde_json = "1.0"                                               # MIT OR Apache-2.0
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

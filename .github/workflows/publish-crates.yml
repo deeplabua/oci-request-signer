@@ -1,0 +1,34 @@
+# Publish to crates.io when a version tag (`v0.1.0`) is pushed.
+# Needs the CARGO_REGISTRY_TOKEN repo secret.
+name: Publish to crates.io
+
+on:
+  push:
+    tags: ["v*"]
+  # Manual re-run from the Actions tab if a publish fails.
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Tag matches Cargo.toml
+        if: github.event_name == 'push'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != Cargo.toml $version"; exit 1; }
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Publish
+        run: cargo publish --locked
