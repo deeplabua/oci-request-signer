@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased — 0.1.0
+## 0.1.1 — 2026-11-10
+
+- Domains: `ClientBuilder::domain`, `Client::on_domain`, `Client::domain` and `Client::host`,
+  with `DEFAULT_DOMAIN` (`oraclecloud.com`) and `OCI_DOMAIN` (`oci.oraclecloud.com`).
+  Newer services — Usage API, Organizations, Limits, Budgets — answer only on
+  `<service>.<region>.oci.oraclecloud.com`; reach them with
+  `client.on_domain(OCI_DOMAIN)`. Other realms: `ClientBuilder::domain`.
+
+## 0.1.0 — 2026-11-10
 
 First release: the config, signer and client code from
 [oci-arm-catcher-core](https://crates.io/crates/oci-arm-catcher-core) 0.1.3, with

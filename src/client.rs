@@ -11,6 +11,15 @@ use crate::error::{ApiError, Error, Result};
 use crate::signer::{Request, Signer};
 
 const DEFAULT_USER_AGENT: &str = concat!("oci-request-signer/", env!("CARGO_PKG_VERSION"));
+/// The domain most OCI services answer on: `<service>.<region>.oraclecloud.com`
+/// (`iaas`, `identity`, `telemetry`, `objectstorage`, ...). The default.
+pub const DEFAULT_DOMAIN: &str = "oraclecloud.com";
+
+/// The domain newer OCI services answer on only: `<service>.<region>.oci.oraclecloud.com`
+/// (`usageapi`, `organizations`, `limits`, `usage` for Budgets, `network-load-balancer-api`, ...).
+/// Checked 10 November 2026; which service lives where is the caller's knowledge, not this crate's.
+pub const OCI_DOMAIN: &str = "oci.oraclecloud.com";
+
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -101,6 +110,7 @@ pub struct ClientBuilder<'a> {
     user_agent: String,
     endpoint: Option<String>,
     region: Option<String>,
+    domain: String,
     connect_timeout: Duration,
     total_timeout: Duration,
 }
@@ -114,7 +124,7 @@ impl ClientBuilder<'_> {
     }
 
     /// Send every request to this base URL (e.g. `http://127.0.0.1:8080`) instead of
-    /// `https://<service>.<region>.oraclecloud.com`. For tests and demos against a local mock.
+    /// `https://<service>.<region>.<domain>`. For tests and demos against a local mock.
     ///
     /// `None` and the empty string leave the real endpoints in place, so an environment
     /// variable can be passed straight in: `.endpoint(std::env::var("MY_TOOL_ENDPOINT").ok())`.
@@ -129,6 +139,14 @@ impl ClientBuilder<'_> {
     /// Talk to `region` (e.g. `us-phoenix-1`) instead of the profile's region.
     pub fn region(mut self, region: impl Into<String>) -> Self {
         self.region = Some(region.into());
+        self
+    }
+
+    /// The domain after `<service>.<region>.`; defaults to [`DEFAULT_DOMAIN`]. Use
+    /// [`Client::on_domain`] to reach [`OCI_DOMAIN`] services from the same client, or pass
+    /// another realm's domain here.
+    pub fn domain(mut self, domain: impl Into<String>) -> Self {
+        self.domain = domain.into();
         self
     }
 
@@ -152,6 +170,7 @@ impl ClientBuilder<'_> {
         Ok(Client {
             signer: Arc::new(Signer::from_profile(self.profile)?),
             region: self.region.unwrap_or_else(|| self.profile.region.clone()),
+            domain: self.domain,
             tenancy: self.profile.tenancy.clone(),
             agent,
             endpoint: self.endpoint,
@@ -164,6 +183,7 @@ impl ClientBuilder<'_> {
 pub struct Client {
     signer: Arc<Signer>,
     region: String,
+    domain: String,
     tenancy: String,
     agent: ureq::Agent,
     endpoint: Option<String>,
@@ -173,6 +193,7 @@ impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
             .field("region", &self.region)
+            .field("domain", &self.domain)
             .field("endpoint", &self.endpoint)
             .finish_non_exhaustive()
     }
@@ -191,6 +212,7 @@ impl Client {
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             endpoint: None,
             region: None,
+            domain: DEFAULT_DOMAIN.to_owned(),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             total_timeout: DEFAULT_TOTAL_TIMEOUT,
         }
@@ -205,9 +227,29 @@ impl Client {
         }
     }
 
+    /// The same client on another domain, e.g. [`OCI_DOMAIN`] for the Usage API:
+    /// `client.on_domain(OCI_DOMAIN).post("usageapi", "/20200107/usage", &query, &[])`.
+    pub fn on_domain(&self, domain: impl Into<String>) -> Self {
+        Self {
+            domain: domain.into(),
+            ..self.clone()
+        }
+    }
+
     /// The region requests go to.
     pub fn region(&self) -> &str {
         &self.region
+    }
+
+    /// The domain requests go to, [`DEFAULT_DOMAIN`] unless set.
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// The host a request to `service` goes to: `<service>.<region>.<domain>`.
+    /// An [endpoint](ClientBuilder::endpoint) override takes precedence when sending.
+    pub fn host(&self, service: &str) -> String {
+        format!("{service}.{}.{}", self.region, self.domain)
     }
 
     /// The tenancy OCID, which is also the root compartment.
@@ -277,7 +319,7 @@ impl Client {
                 (host.to_owned(), format!("{base}{path_and_query}"))
             }
             None => {
-                let host = format!("{service}.{}.oraclecloud.com", self.region);
+                let host = self.host(service);
                 let url = format!("https://{host}{path_and_query}");
                 (host, url)
             }

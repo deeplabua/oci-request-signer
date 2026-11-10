@@ -44,7 +44,7 @@ mod error;
 pub mod signer;
 
 #[cfg(feature = "client")]
-pub use client::{Client, ClientBuilder, Method, Response};
+pub use client::{Client, ClientBuilder, DEFAULT_DOMAIN, Method, OCI_DOMAIN, Response};
 pub use config::{DEFAULT_PROFILE, Profile, expand_home};
 pub use encode::encode;
 pub use error::{ApiError, Error, Result};

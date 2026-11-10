@@ -226,3 +226,46 @@ fn missing_key_is_a_key_error() {
     p.key_file = PathBuf::from("/nonexistent/key.pem");
     assert!(matches!(Client::new(&p), Err(Error::Key { .. })));
 }
+
+#[test]
+fn domains_build_the_host() {
+    use oci_request_signer::{DEFAULT_DOMAIN, OCI_DOMAIN};
+    let p = profile();
+    let c = Client::new(&p).unwrap();
+    assert_eq!(c.domain(), DEFAULT_DOMAIN);
+    assert_eq!(c.host("iaas"), "iaas.eu-amsterdam-1.oraclecloud.com");
+
+    let usage = c.on_domain(OCI_DOMAIN);
+    assert_eq!(
+        usage.host("usageapi"),
+        "usageapi.eu-amsterdam-1.oci.oraclecloud.com"
+    );
+    assert_eq!(
+        c.domain(),
+        DEFAULT_DOMAIN,
+        "on_domain leaves the original alone"
+    );
+    assert_eq!(
+        usage.in_region("us-phoenix-1").host("limits"),
+        "limits.us-phoenix-1.oci.oraclecloud.com"
+    );
+
+    let other_realm = Client::builder(&p)
+        .domain("oraclegovcloud.com")
+        .build()
+        .unwrap();
+    assert_eq!(
+        other_realm.host("iaas"),
+        "iaas.eu-amsterdam-1.oraclegovcloud.com"
+    );
+    assert!(format!("{other_realm:?}").contains("oraclegovcloud.com"));
+}
+
+#[test]
+fn endpoint_override_wins_over_domain() {
+    let (base, rx) = mock("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n[]");
+    let c = client(base).on_domain(oci_request_signer::OCI_DOMAIN);
+    let _: Vec<Item> = c.get("usageapi", "/x").unwrap();
+    let seen = rx.recv().unwrap();
+    assert!(seen.header("host").unwrap().starts_with("127.0.0.1:"));
+}

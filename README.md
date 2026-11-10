@@ -34,11 +34,18 @@ assert_eq!(resp.status(), 204);
 
 // Another region with the same key.
 let phoenix = client.in_region("us-phoenix-1");
+
+// Newer services (Usage API, Organizations, Limits, Budgets) live on oci.oraclecloud.com.
+let usage = client.on_domain(oci_request_signer::OCI_DOMAIN);
+let query = serde_json::json!({ "tenantId": client.tenancy(), "granularity": "MONTHLY",
+    "queryType": "COST", "timeUsageStarted": "2026-10-01T00:00:00Z",
+    "timeUsageEnded": "2026-11-01T00:00:00Z" });
+let cost: serde_json::Value = usage.post("usageapi", "/20200107/usage", &query, &[])?;
 # Ok::<(), oci_request_signer::Error>(())
 ```
 
 The crate knows no OCI services: you pass the host prefix (`iaas`, `identity`, `telemetry`,
-`usageapi`, `objectstorage`, ...) and the path from the
+`usageapi`, `objectstorage`, ...), pick the domain for the newer ones, and give the path from the
 [API reference](https://docs.oracle.com/iaas/api/). Errors from OCI come back as `ApiError`
 with the status, OCI error code, message and `opc-request-id`.
 
