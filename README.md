@@ -70,8 +70,14 @@ retry helpers. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Used by
 
-[oci-arm-catcher](https://github.com/deeplabua/oci-arm-catcher), oci-free-keeper and
-oci-free-audit — part of [DeepLab](https://deeplab.tools).
+- [oci-arm-catcher](https://github.com/deeplabua/oci-arm-catcher) — grabs a free Ampere A1 instance
+  the moment capacity appears;
+- [oci-free-keeper](https://github.com/deeplabua/oci-free-keeper) — knows the moment an instance is
+  stopped or gone, and how close it is to Oracle's idle rule;
+- [oci-free-audit](https://github.com/deeplabua/oci-free-audit) — will Oracle charge me? A read-only
+  check against the Always Free limits and the actual bill.
+
+All part of [DeepLab](https://deeplab.tools).
 
 ## Support
 

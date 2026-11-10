@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-11-10
+
+- README: links to the other DeepLab OCI tools and the crate they share.
+
 ## 0.1.2 — 2026-11-10
 
 - README: icon and badges (CI, crates.io, license, stars).
