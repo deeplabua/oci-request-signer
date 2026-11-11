@@ -359,3 +359,17 @@ fn lists_follow_next_page_and_accept_items_objects() {
         "GET /20160918/instances?compartmentId=c&page=p%202 HTTP/1.1"
     );
 }
+
+#[test]
+fn endpoint_placeholders_name_the_region_and_service() {
+    let (base, rx) = mock("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n[]");
+    let c = client(format!("{base}/{{region}}/{{service}}")).in_region("eu-frankfurt-1");
+    let _: Vec<Item> = c.get("iaas", "/20160918/instances?a=1").unwrap();
+    let seen = rx.recv().unwrap();
+    assert_eq!(
+        seen.request_line,
+        "GET /eu-frankfurt-1/iaas/20160918/instances?a=1 HTTP/1.1"
+    );
+    assert!(seen.header("host").unwrap().starts_with("127.0.0.1:"));
+    assert!(!seen.header("host").unwrap().contains('/'));
+}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-11-11
+
+- `ClientBuilder::endpoint`: `{region}` and `{service}` in the mock's URL are replaced per request,
+  so a mock can answer each region and service differently.
+
 ## 0.2.0 — 2026-11-11
 
 - `Client::list`: every item of a list, following `opc-next-page`; the answer may be a JSON

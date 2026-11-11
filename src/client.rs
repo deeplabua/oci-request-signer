@@ -129,6 +129,11 @@ impl ClientBuilder<'_> {
     /// Send every request to this base URL (e.g. `http://127.0.0.1:8080`) instead of
     /// `https://<service>.<region>.<domain>`. For tests and demos against a local mock.
     ///
+    /// `{region}` and `{service}` in it are replaced per request, so a mock can tell regions and
+    /// services apart: `http://127.0.0.1:8080/{region}` sends a `ListInstances` in Frankfurt to
+    /// `http://127.0.0.1:8080/eu-frankfurt-1/20160918/instances`. The signature still covers the
+    /// path without that prefix — fine for a mock, which does not check it.
+    ///
     /// `None` and the empty string leave the real endpoints in place, so an environment
     /// variable can be passed straight in: `.endpoint(std::env::var("MY_TOOL_ENDPOINT").ok())`.
     pub fn endpoint(mut self, endpoint: impl Into<Option<String>>) -> Self {
@@ -393,7 +398,11 @@ impl Client {
     ) -> Result<Response> {
         let (host, url) = match &self.endpoint {
             Some(base) => {
-                let host = base.split_once("://").map_or(base.as_str(), |(_, h)| h);
+                let base = base
+                    .replace("{region}", &self.region)
+                    .replace("{service}", service);
+                let authority = base.split_once("://").map_or(base.as_str(), |(_, h)| h);
+                let host = authority.split('/').next().unwrap_or(authority);
                 (host.to_owned(), format!("{base}{path_and_query}"))
             }
             None => {
