@@ -373,3 +373,165 @@ fn endpoint_placeholders_name_the_region_and_service() {
     assert!(seen.header("host").unwrap().starts_with("127.0.0.1:"));
     assert!(!seen.header("host").unwrap().contains('/'));
 }
+
+/// Serve requests until the test ends, answering each with `route(request_line, body)`;
+/// report every request.
+fn mock_routes(route: fn(&str, &[u8]) -> (u16, String)) -> (String, mpsc::Receiver<Seen>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                continue;
+            }
+            let mut headers = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                let (k, v) = line.split_once(':').unwrap();
+                headers.push((k.trim().to_owned(), v.trim().to_owned()));
+            }
+            let len: usize = headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .map_or(0, |(_, v)| v.parse().unwrap());
+            let mut body = vec![0; len];
+            reader.read_exact(&mut body).unwrap();
+            let request_line = request_line.trim_end().to_owned();
+            let (status, answer) = route(&request_line, &body);
+            // Logged before answering, so the client never runs ahead of the log.
+            let _ = tx.send(Seen {
+                request_line,
+                headers,
+                body,
+            });
+            let mut stream = stream;
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                    answer.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    (base, rx)
+}
+
+/// A JWT whose payload says it expires at `exp` (seconds since the epoch).
+fn jwt(exp: u64) -> String {
+    use base64::Engine as _;
+    let payload =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+    format!("h.{payload}.s")
+}
+
+/// The instance metadata service and X.509 federation. The token it hands out expires in an
+/// hour; with `/auth-expired/` in the path, one that has already expired.
+fn instance_routes(line: &str, _body: &[u8]) -> (u16, String) {
+    let path = line.split_whitespace().nth(1).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cert = include_str!("../testdata/instance-cert.pem");
+    match path {
+        p if p.ends_with("/instance/canonicalRegionName") => (200, "eu-frankfurt-1".into()),
+        p if p.ends_with("/identity/cert.pem") || p.ends_with("/identity/intermediate.pem") => {
+            (200, cert.into())
+        }
+        p if p.ends_with("/identity/key.pem") => {
+            (200, include_str!("../testdata/test-key-pkcs1.pem").into())
+        }
+        "/auth/v1/x509" => (200, format!(r#"{{"token":"{}"}}"#, jwt(now + 3600))),
+        "/auth-expired/v1/x509" => (200, format!(r#"{{"token":"{}"}}"#, jwt(now))),
+        _ => (200, "[]".into()),
+    }
+}
+
+fn key_id(seen: &Seen) -> String {
+    let auth = seen.header("authorization").unwrap();
+    let start = auth.find("keyId=\"").unwrap() + 7;
+    auth[start..].split('"').next().unwrap().to_owned()
+}
+
+#[test]
+fn instance_principal_federates_then_signs_with_the_session_token() {
+    let (base, rx) = mock_routes(instance_routes);
+    let client = Client::instance_principal()
+        .metadata_endpoint(format!("{base}/opc/v2"))
+        .endpoint(format!("{base}/{{service}}"))
+        .build()
+        .unwrap();
+    assert_eq!(client.region(), "eu-frankfurt-1");
+    assert_eq!(client.tenancy(), "ocid1.tenancy.oc1..t");
+
+    // Metadata: region, certificate; then federation: certificate, key, intermediate, POST.
+    let seen: Vec<Seen> = rx.try_iter().collect();
+    for s in seen.iter().filter(|s| s.request_line.contains("/opc/v2/")) {
+        assert_eq!(s.header("authorization"), Some("Bearer Oracle"), "{s:?}");
+    }
+    let federation = seen
+        .iter()
+        .find(|s| s.request_line.starts_with("POST /auth/v1/x509"))
+        .expect("a federation request");
+    assert_eq!(
+        key_id(federation),
+        "ocid1.tenancy.oc1..t/fed-x509/E2:AB:FE:2A:47:A6:7E:BA:29:BE:F8:B7:83:60:26:B8:76:EA:24:66"
+    );
+    let body: serde_json::Value = serde_json::from_slice(&federation.body).unwrap();
+    assert!(body["certificate"].as_str().unwrap().starts_with("MII"));
+    assert!(body["publicKey"].as_str().unwrap().starts_with("MII"));
+    assert_eq!(
+        body["intermediateCertificates"].as_array().unwrap().len(),
+        1
+    );
+
+    // Then requests carry the session token, and it is reused while it is fresh.
+    let _: Vec<Item> = client.get("iaas", "/20160918/instances").unwrap();
+    let _: Vec<Item> = client.get("iaas", "/20160918/vcns").unwrap();
+    let seen: Vec<Seen> = rx.try_iter().collect();
+    assert_eq!(seen.len(), 2, "no new federation: {seen:?}");
+    for s in &seen {
+        assert!(key_id(s).starts_with("ST$h."), "{s:?}");
+    }
+}
+
+#[test]
+fn an_expiring_session_token_is_renewed() {
+    let (base, rx) = mock_routes(instance_routes);
+    let client = Client::instance_principal()
+        .metadata_endpoint(format!("{base}/opc/v2"))
+        // Federation answers with a token that has already run out.
+        .endpoint(format!("{base}/{{service}}-expired"))
+        .build()
+        .unwrap();
+    let _ = rx.try_iter().count();
+    let _: Vec<Item> = client.get("iaas", "/x").unwrap();
+    let seen: Vec<String> = rx.try_iter().map(|s| s.request_line).collect();
+    assert!(
+        seen.iter()
+            .any(|l| l.starts_with("POST /auth-expired/v1/x509")),
+        "renewed before the request: {seen:?}"
+    );
+}
+
+#[test]
+fn instance_principal_off_an_instance_fails_quickly() {
+    // Nothing listens on this port.
+    let started = std::time::Instant::now();
+    let err = Client::instance_principal()
+        .metadata_endpoint("http://127.0.0.1:9/opc/v2")
+        .build()
+        .unwrap_err();
+    assert!(err.to_string().contains("metadata service"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-11-11
+
+- `Client::instance_principal()`: sign as the OCI instance the program runs on — no API key or
+  config file. Region and tenancy come from the instance metadata service; the session token from
+  OCI's X.509 federation is renewed before it runs out. `ClientBuilder::metadata_endpoint` points
+  it at a mock for tests. No new dependencies.
+
 ## 0.2.1 — 2026-11-11
 
 - `ClientBuilder::endpoint`: `{region}` and `{service}` in the mock's URL are replaced per request,

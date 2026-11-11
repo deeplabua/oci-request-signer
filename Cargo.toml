@@ -1,6 +1,6 @@
 [package]
 name = "oci-request-signer"
-version = "0.2.1"
+version = "0.3.0"
 description = "Sign Oracle Cloud (OCI) REST API requests from Rust: reads ~/.oci/config, RSA-SHA256 HTTP signatures, small blocking client — no OCI SDK, no OpenSSL"
 keywords = ["oracle-cloud", "oci", "request-signing", "api"]
 categories = ["api-bindings", "authentication"]

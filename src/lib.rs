@@ -41,6 +41,8 @@ pub mod client;
 pub mod config;
 mod encode;
 mod error;
+#[cfg(feature = "client")]
+mod instance;
 pub mod signer;
 
 #[cfg(feature = "client")]
@@ -48,4 +50,6 @@ pub use client::{Client, ClientBuilder, DEFAULT_DOMAIN, Method, OCI_DOMAIN, Resp
 pub use config::{DEFAULT_PROFILE, Profile, expand_home};
 pub use encode::encode;
 pub use error::{ApiError, Error, Result};
+#[cfg(feature = "client")]
+pub use instance::DEFAULT_METADATA_ENDPOINT;
 pub use signer::Signer;

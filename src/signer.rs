@@ -112,6 +112,49 @@ impl Signer {
         use ring::signature::KeyPair as _;
         self.key.public_key().as_ref().to_vec()
     }
+
+    /// The public key as DER `SubjectPublicKeyInfo` — what OCI's X.509 federation wants as
+    /// `publicKey` (instance principals).
+    #[cfg(feature = "client")]
+    pub(crate) fn public_key_spki(&self) -> Vec<u8> {
+        use ring::signature::KeyPair as _;
+        // AlgorithmIdentifier { rsaEncryption, NULL }
+        const RSA_ALGORITHM: &[u8] = &[
+            0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05,
+            0x00,
+        ];
+        let mut bits = vec![0x00]; // no unused bits
+        bits.extend_from_slice(self.key.public_key().as_ref());
+        let mut inner = RSA_ALGORITHM.to_vec();
+        inner.extend(der(0x03, &bits));
+        der(0x30, &inner)
+    }
+}
+
+/// One DER TLV.
+#[cfg(feature = "client")]
+fn der(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut out = vec![tag];
+    let len = value.len();
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let bytes: Vec<u8> = len
+            .to_be_bytes()
+            .into_iter()
+            .skip_while(|b| *b == 0)
+            .collect();
+        out.push(0x80 | bytes.len() as u8);
+        out.extend(bytes);
+    }
+    out.extend_from_slice(value);
+    out
+}
+
+/// The DER bytes of a PEM certificate or key.
+#[cfg(feature = "client")]
+pub(crate) fn pem_der(pem: &str) -> std::result::Result<Vec<u8>, String> {
+    decode_pem(pem).map(|(_, der)| der)
 }
 
 /// The space-separated header list and the newline-joined string that gets signed.

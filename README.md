@@ -62,6 +62,23 @@ The crate knows no OCI services: you pass the host prefix (`iaas`, `identity`, `
 with the status, OCI error code, message, `opc-request-id` and, for a 429, `Retry-After`.
 Server errors (5xx) are never retried by the crate: a `POST` may already have happened.
 
+### On an OCI instance, without an API key
+
+On an OCI instance, sign as the instance itself (an *instance principal*): no config file and no
+key on disk. Region and tenancy come from the instance metadata service; the session token is
+renewed before it runs out.
+
+```rust,no_run
+# fn main() -> oci_request_signer::Result<()> {
+let client = oci_request_signer::Client::instance_principal().build()?;
+# Ok(())
+# }
+```
+
+The instance needs a dynamic group that matches it, e.g.
+`ANY {instance.compartment.id = '<compartment OCID>'}`, and policies that grant that group what
+your tool does, e.g. `Allow dynamic-group <group> to read all-resources in tenancy`.
+
 ### Your own HTTP stack
 
 With `default-features = false` the crate is config + signer only (`base64`, `dirs`, `ring`,
@@ -70,7 +87,7 @@ With `default-features = false` the crate is config + signer only (`base64`, `di
 
 ## Not yet
 
-Instance / resource principals and session tokens, encrypted keys, async. See [`CHANGELOG.md`](CHANGELOG.md).
+Resource principals (Functions), security-token profiles, encrypted keys, async. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Used by
 

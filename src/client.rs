@@ -8,6 +8,7 @@ use serde::de::DeserializeOwned;
 
 use crate::config::Profile;
 use crate::error::{ApiError, Error, Result};
+use crate::instance::{DEFAULT_METADATA_ENDPOINT, InstancePrincipal};
 use crate::signer::{Request, Signer};
 
 const DEFAULT_USER_AGENT: &str = concat!("oci-request-signer/", env!("CARGO_PKG_VERSION"));
@@ -104,11 +105,26 @@ impl Response {
     }
 }
 
-/// Configures a [`Client`]. Start with [`Client::builder`].
+/// Who the requests are signed as.
+#[derive(Debug, Clone)]
+enum Source<'a> {
+    /// An API key from `~/.oci/config`.
+    Profile(&'a Profile),
+    /// The instance the program runs on.
+    Instance { metadata: String },
+}
+
+/// How a client signs.
+enum Auth {
+    Key(Arc<Signer>),
+    Instance(InstancePrincipal),
+}
+
+/// Configures a [`Client`]. Start with [`Client::builder`] or [`Client::instance_principal`].
 #[derive(Debug, Clone)]
 #[must_use]
 pub struct ClientBuilder<'a> {
-    profile: &'a Profile,
+    source: Source<'a>,
     user_agent: String,
     endpoint: Option<String>,
     region: Option<String>,
@@ -174,7 +190,18 @@ impl ClientBuilder<'_> {
         self
     }
 
-    /// Load the signing key and build the client.
+    /// Where the instance metadata service answers, for [`Client::instance_principal`];
+    /// defaults to `http://169.254.169.254/opc/v2`. For tests against a local mock.
+    pub fn metadata_endpoint(mut self, url: impl Into<String>) -> Self {
+        if let Source::Instance { metadata } = &mut self.source {
+            *metadata = url.into().trim_end_matches('/').to_owned();
+        }
+        self
+    }
+
+    /// Load the signing key and build the client. With [`Client::instance_principal`] this
+    /// asks the metadata service who the instance is and gets the first session token, so a
+    /// machine that is not an OCI instance fails here, quickly.
     pub fn build(self) -> Result<Client> {
         let agent = ureq::Agent::config_builder()
             // We read OCI's error body ourselves.
@@ -184,22 +211,44 @@ impl ClientBuilder<'_> {
             .user_agent(&self.user_agent)
             .build()
             .into();
-        Ok(Client {
-            signer: Arc::new(Signer::from_profile(self.profile)?),
-            region: self.region.unwrap_or_else(|| self.profile.region.clone()),
+        let (auth, region, tenancy) = match self.source {
+            Source::Profile(profile) => (
+                Auth::Key(Arc::new(Signer::from_profile(profile)?)),
+                profile.region.clone(),
+                profile.tenancy.clone(),
+            ),
+            Source::Instance { metadata } => {
+                // The metadata service is link-local: off an instance it does not answer at all.
+                let quick: ureq::Agent = ureq::Agent::config_builder()
+                    .http_status_as_error(false)
+                    .timeout_connect(Some(Duration::from_secs(3)))
+                    .timeout_global(Some(Duration::from_secs(10)))
+                    .build()
+                    .into();
+                let (principal, me) = InstancePrincipal::new(metadata, quick)?;
+                (Auth::Instance(principal), me.region, me.tenancy)
+            }
+        };
+        let client = Client {
+            auth: Arc::new(auth),
+            region: self.region.unwrap_or(region),
             domain: self.domain,
-            tenancy: self.profile.tenancy.clone(),
+            tenancy,
             agent,
             endpoint: self.endpoint,
             retry_throttled: self.retry_throttled,
-        })
+        };
+        if let Auth::Instance(principal) = client.auth.as_ref() {
+            principal.signer(&client)?;
+        }
+        Ok(client)
     }
 }
 
 /// A signed connection to one region. Cheap to clone; clones share the key and connection pool.
 #[derive(Clone)]
 pub struct Client {
-    signer: Arc<Signer>,
+    auth: Arc<Auth>,
     region: String,
     domain: String,
     tenancy: String,
@@ -227,7 +276,25 @@ impl Client {
     /// Configure a client for `profile`.
     pub fn builder(profile: &Profile) -> ClientBuilder<'_> {
         ClientBuilder {
-            profile,
+            source: Source::Profile(profile),
+            user_agent: DEFAULT_USER_AGENT.to_owned(),
+            endpoint: None,
+            region: None,
+            domain: DEFAULT_DOMAIN.to_owned(),
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            total_timeout: DEFAULT_TOTAL_TIMEOUT,
+            retry_throttled: 0,
+        }
+    }
+
+    /// Configure a client that signs as the OCI instance it runs on (instance principal): no
+    /// API key or config file; the instance must be in a dynamic group that a policy grants
+    /// permissions to. Region and tenancy come from the instance metadata service.
+    pub fn instance_principal() -> ClientBuilder<'static> {
+        ClientBuilder {
+            source: Source::Instance {
+                metadata: DEFAULT_METADATA_ENDPOINT.to_owned(),
+            },
             user_agent: DEFAULT_USER_AGENT.to_owned(),
             endpoint: None,
             region: None,
@@ -396,6 +463,30 @@ impl Client {
         body: Option<&[u8]>,
         extra_headers: &[(&str, &str)],
     ) -> Result<Response> {
+        let signer = match self.auth.as_ref() {
+            Auth::Key(signer) => Arc::clone(signer),
+            Auth::Instance(principal) => principal.signer(self)?,
+        };
+        self.send_signed(
+            &signer,
+            method,
+            service,
+            path_and_query,
+            body,
+            extra_headers,
+        )
+    }
+
+    /// One request signed by `signer`, no retries.
+    pub(crate) fn send_signed(
+        &self,
+        signer: &Signer,
+        method: Method,
+        service: &str,
+        path_and_query: &str,
+        body: Option<&[u8]>,
+        extra_headers: &[(&str, &str)],
+    ) -> Result<Response> {
         let (host, url) = match &self.endpoint {
             Some(base) => {
                 let base = base
@@ -417,7 +508,7 @@ impl Client {
             body
         };
         let date = httpdate::fmt_http_date(SystemTime::now());
-        let signed = self.signer.sign(&Request {
+        let signed = signer.sign(&Request {
             method: method.as_str(),
             host: &host,
             path_and_query,
