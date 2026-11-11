@@ -41,6 +41,7 @@ pub enum Error {
 
 /// An error response from the OCI API.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ApiError {
     /// HTTP status code.
     pub status: u16,
@@ -50,6 +51,22 @@ pub struct ApiError {
     pub message: String,
     /// `opc-request-id`, which Oracle support asks for.
     pub request_id: Option<String>,
+    /// `Retry-After`, in seconds, when the service sent one (with a `429`).
+    pub retry_after: Option<std::time::Duration>,
+}
+
+impl ApiError {
+    /// An error with no request id and no `Retry-After` — for tests and for callers that
+    /// map their own failures onto OCI's shape. (The struct is `#[non_exhaustive]`.)
+    pub fn new(status: u16, code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: code.into(),
+            message: message.into(),
+            request_id: None,
+            retry_after: None,
+        }
+    }
 }
 
 impl fmt::Display for ApiError {

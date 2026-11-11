@@ -20,7 +20,7 @@ about **Oracle Cloud Infrastructure** API requests.
 
 ```toml
 [dependencies]
-oci-request-signer = "0.1"
+oci-request-signer = "0.2"
 ```
 
 ```rust,no_run
@@ -30,11 +30,15 @@ let profile = Profile::load(&Profile::default_path().unwrap(), DEFAULT_PROFILE)?
 let client = Client::builder(&profile)
     .user_agent(concat!("my-tool/", env!("CARGO_PKG_VERSION")))
     .endpoint(std::env::var("MY_TOOL_ENDPOINT").ok()) // a local mock in tests; None = real OCI
+    .retry_throttled(3) // retry a 429 after its Retry-After; off by default
     .build()?;
 
 // GET https://iaas.<region>.oraclecloud.com/20160918/instances?compartmentId=...
 let path = format!("/20160918/instances?compartmentId={}", encode(client.tenancy()));
 let instances: serde_json::Value = client.get("iaas", &path)?;
+
+// Every page of a list (opc-next-page), whether it answers [...] or {"items": [...]}.
+let all: Vec<serde_json::Value> = client.list("iaas", &path)?;
 
 // Raw responses: status, headers (opc-next-page, etag, ...), empty 204 bodies.
 let resp = client.delete("iaas", "/20160918/bootVolumeBackups/ocid1...", &[])?;
@@ -55,7 +59,8 @@ let cost: serde_json::Value = usage.post("usageapi", "/20200107/usage", &query, 
 The crate knows no OCI services: you pass the host prefix (`iaas`, `identity`, `telemetry`,
 `usageapi`, `objectstorage`, ...), pick the domain for the newer ones, and give the path from the
 [API reference](https://docs.oracle.com/iaas/api/). Errors from OCI come back as `ApiError`
-with the status, OCI error code, message and `opc-request-id`.
+with the status, OCI error code, message, `opc-request-id` and, for a 429, `Retry-After`.
+Server errors (5xx) are never retried by the crate: a `POST` may already have happened.
 
 ### Your own HTTP stack
 
@@ -65,8 +70,7 @@ With `default-features = false` the crate is config + signer only (`base64`, `di
 
 ## Not yet
 
-Instance / resource principals and session tokens, encrypted keys, async, pagination and
-retry helpers. See [`CHANGELOG.md`](CHANGELOG.md).
+Instance / resource principals and session tokens, encrypted keys, async. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Used by
 

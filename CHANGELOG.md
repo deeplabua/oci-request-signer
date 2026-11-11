@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-11-11
+
+- `Client::list`: every item of a list, following `opc-next-page`; the answer may be a JSON
+  array or `{"items": [...]}`.
+- `ClientBuilder::retry_throttled(n)`: retry a `429 TooManyRequests` up to `n` times after the
+  `Retry-After` it carries (at most 60 s) or 1, 2, 4… s, re-signed each time. Off by default.
+  5xx are not retried — that stays the caller's decision.
+- `ApiError::retry_after`; `ApiError` is `#[non_exhaustive]` now, with `ApiError::new` for tests.
+  **Breaking:** code that built `ApiError { .. }` by hand uses `ApiError::new` instead.
+
 ## 0.1.3 — 2026-11-10
 
 - README: links to the other DeepLab OCI tools and the crate they share.

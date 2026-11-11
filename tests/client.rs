@@ -269,3 +269,93 @@ fn endpoint_override_wins_over_domain() {
     let seen = rx.recv().unwrap();
     assert!(seen.header("host").unwrap().starts_with("127.0.0.1:"));
 }
+
+/// Serve `responses` in order, one per connection (each says `Connection: close`), and report
+/// every request.
+fn mock_seq(responses: Vec<&'static str>) -> (String, mpsc::Receiver<Seen>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for response in responses {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut headers = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                let (k, v) = line.split_once(':').unwrap();
+                headers.push((k.trim().to_owned(), v.trim().to_owned()));
+            }
+            let mut stream = stream;
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            tx.send(Seen {
+                request_line: request_line.trim_end().to_owned(),
+                headers,
+                body: Vec::new(),
+            })
+            .unwrap();
+        }
+    });
+    (base, rx)
+}
+
+const THROTTLED: &str = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: 52\r\n\r\n{\"code\":\"TooManyRequests\",\"message\":\"slow down pls\"}";
+
+#[test]
+fn throttled_requests_are_retried_when_asked() {
+    let (base, rx) = mock_seq(vec![
+        THROTTLED,
+        THROTTLED,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: 2\r\n\r\n[]",
+    ]);
+    let c = Client::builder(&profile())
+        .endpoint(base)
+        .retry_throttled(2)
+        .build()
+        .unwrap();
+    let v: Vec<serde_json::Value> = c.get("iaas", "/20160918/instances").unwrap();
+    assert!(v.is_empty());
+    let seen: Vec<Seen> = rx.iter().take(3).collect();
+    // Each attempt is signed afresh.
+    assert!(seen.iter().all(|s| s.header("authorization").is_some()));
+}
+
+#[test]
+fn throttling_is_reported_by_default() {
+    let (base, _rx) = mock_seq(vec![THROTTLED]);
+    let err = client(base)
+        .get::<serde_json::Value>("iaas", "/x")
+        .unwrap_err();
+    match err {
+        Error::Api(e) => {
+            assert_eq!((e.status, e.code.as_str()), (429, "TooManyRequests"));
+            assert_eq!(e.retry_after, Some(std::time::Duration::ZERO));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn lists_follow_next_page_and_accept_items_objects() {
+    let (base, rx) = mock_seq(vec![
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nopc-next-page: p 2\r\nconnection: close\r\ncontent-length: 5\r\n\r\n[1,2]",
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: 13\r\n\r\n{\"items\":[3]}",
+    ]);
+    let all: Vec<u32> = client(base)
+        .list("iaas", "/20160918/instances?compartmentId=c")
+        .unwrap();
+    assert_eq!(all, vec![1, 2, 3]);
+    let seen: Vec<Seen> = rx.iter().take(2).collect();
+    assert_eq!(
+        seen[1].request_line,
+        "GET /20160918/instances?compartmentId=c&page=p%202 HTTP/1.1"
+    );
+}

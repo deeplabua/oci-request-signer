@@ -22,6 +22,8 @@ pub const OCI_DOMAIN: &str = "oci.oraclecloud.com";
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_TOTAL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest a throttled request waits before trying again, whatever `Retry-After` says.
+const MAX_THROTTLE_WAIT: Duration = Duration::from_secs(60);
 
 /// An HTTP method the client can send.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,6 +115,7 @@ pub struct ClientBuilder<'a> {
     domain: String,
     connect_timeout: Duration,
     total_timeout: Duration,
+    retry_throttled: u32,
 }
 
 impl ClientBuilder<'_> {
@@ -157,6 +160,15 @@ impl ClientBuilder<'_> {
         self
     }
 
+    /// Retry a request answered `429 TooManyRequests` up to `times` times, waiting what
+    /// `Retry-After` says (at most 60 s) or 1, 2, 4… s. Off (0) by default: a tool that loops on
+    /// its own — like a capacity hunter — should see the 429. 5xx are never retried here: a
+    /// `POST` may have been carried out, so that decision is the caller's.
+    pub fn retry_throttled(mut self, times: u32) -> Self {
+        self.retry_throttled = times;
+        self
+    }
+
     /// Load the signing key and build the client.
     pub fn build(self) -> Result<Client> {
         let agent = ureq::Agent::config_builder()
@@ -174,6 +186,7 @@ impl ClientBuilder<'_> {
             tenancy: self.profile.tenancy.clone(),
             agent,
             endpoint: self.endpoint,
+            retry_throttled: self.retry_throttled,
         })
     }
 }
@@ -187,6 +200,7 @@ pub struct Client {
     tenancy: String,
     agent: ureq::Agent,
     endpoint: Option<String>,
+    retry_throttled: u32,
 }
 
 impl std::fmt::Debug for Client {
@@ -215,6 +229,7 @@ impl Client {
             domain: DEFAULT_DOMAIN.to_owned(),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             total_timeout: DEFAULT_TOTAL_TIMEOUT,
+            retry_throttled: 0,
         }
     }
 
@@ -301,11 +316,74 @@ impl Client {
     }
 
     /// Send a signed request and return the response as is. Non-2xx answers become
-    /// [`Error::Api`].
+    /// [`Error::Api`]. With [`ClientBuilder::retry_throttled`], a `429 TooManyRequests` is
+    /// retried after the `Retry-After` the service asks for (or 1, 2, 4… s), re-signed each time.
     ///
     /// `body` is sent as `application/json`. For `POST` and `PUT` without a body an empty one
     /// is signed, as OCI requires (e.g. `POST /instances/{id}?action=START`).
     pub fn request(
+        &self,
+        method: Method,
+        service: &str,
+        path_and_query: &str,
+        body: Option<&[u8]>,
+        extra_headers: &[(&str, &str)],
+    ) -> Result<Response> {
+        let mut attempt = 0;
+        loop {
+            match self.send(method, service, path_and_query, body, extra_headers) {
+                Err(Error::Api(e)) if e.status == 429 && attempt < self.retry_throttled => {
+                    let wait = e
+                        .retry_after
+                        .unwrap_or_else(|| Duration::from_secs(1 << attempt.min(5)))
+                        .min(MAX_THROTTLE_WAIT);
+                    std::thread::sleep(wait);
+                    attempt += 1;
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Every item of a list, following `opc-next-page`. The answer may be a JSON array
+    /// (`ListInstances`) or `{"items": [...]}` (`ListSubscriptions`, network load balancers).
+    /// `path_and_query` has its query values [`encode`](crate::encode)d.
+    pub fn list<T: DeserializeOwned>(&self, service: &str, path_and_query: &str) -> Result<Vec<T>> {
+        let mut all = Vec::new();
+        let mut page: Option<String> = None;
+        loop {
+            let url = match &page {
+                Some(p) => {
+                    let sep = if path_and_query.contains('?') {
+                        '&'
+                    } else {
+                        '?'
+                    };
+                    format!("{path_and_query}{sep}page={}", crate::encode(p))
+                }
+                None => path_and_query.to_owned(),
+            };
+            let resp = self.request(Method::Get, service, &url, None, &[])?;
+            let v: serde_json::Value = resp.json()?;
+            let items = match v {
+                serde_json::Value::Array(_) => v,
+                mut obj => obj
+                    .get_mut("items")
+                    .map(serde_json::Value::take)
+                    .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+            };
+            all.extend(serde_json::from_value::<Vec<T>>(items).map_err(|e| {
+                Error::Transport(format!("unexpected response from {service}: {e}"))
+            })?);
+            match resp.header("opc-next-page") {
+                Some(next) if !next.is_empty() => page = Some(next.to_owned()),
+                _ => return Ok(all),
+            }
+        }
+    }
+
+    /// One signed request, no retries.
+    fn send(
         &self,
         method: Method,
         service: &str,
@@ -395,7 +473,12 @@ impl Client {
         } else {
             let text = String::from_utf8_lossy(&response.body);
             let request_id = response.request_id().map(str::to_owned);
-            Err(api_error(status, &text, request_id).into())
+            let mut e = api_error(status, &text, request_id);
+            e.retry_after = response
+                .header("retry-after")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(Duration::from_secs);
+            Err(e.into())
         }
     }
 }
@@ -426,6 +509,7 @@ pub(crate) fn api_error(status: u16, body: &str, request_id: Option<String>) -> 
             }
         }),
         request_id,
+        retry_after: None,
     }
 }
 
